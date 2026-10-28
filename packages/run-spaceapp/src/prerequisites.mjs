@@ -10,6 +10,7 @@ import { pipeline } from "node:stream/promises";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { UNIVERSAL_INSTALL_COMMAND } from "./package-info.mjs";
+import { engineIsReady } from "./engine.mjs";
 
 const DOCKER_TERMS_URL = "https://www.docker.com/legal/docker-subscription-service-agreement/";
 const DOWNLOAD_TIMEOUT_MS = 30 * 60 * 1_000;
@@ -138,6 +139,17 @@ export async function ensureDockerAvailable({
 }) {
   if (await dockerIsReady(execute)) {
     return { code: 0, reexecuted: false };
+  }
+  if ((platform === "linux" || platform === "darwin") && await engineIsReady(execute, "podman")) {
+    const autoConfirm = Boolean(installArgs?.autoConfirm);
+    const selectPodman = autoConfirm || await confirmQuestion({
+      stdin,
+      stdout,
+      question: "Docker is not available, but rootless Podman is ready. Use rootless Podman as container engine instead of installing Docker?"
+    });
+    if (selectPodman) {
+      return { code: 0, reexecuted: false, engine: "podman" };
+    }
   }
   if (platform === "win32") {
     return ensureWindowsDocker({

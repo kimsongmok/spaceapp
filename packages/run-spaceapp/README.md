@@ -16,7 +16,37 @@ npm install -g run-spaceapp
 ```
 
 The smallest profile requires Node.js 20.11 or newer, 4 CPUs, 8 GB-class RAM
-(7 GiB usable), and 6.5 GiB free for a fresh installation. Keep `@latest` in the command so npm resolves the current release instead
+(7 GiB usable), and 6.5 GiB free for a fresh installation.
+
+### Container Engines (Docker and rootless Podman)
+
+SpaceApp supports both **Docker** (default) and **rootless Podman** on Linux and macOS.
+By default, the launcher uses Docker. If Docker is not available and Podman is ready on
+Linux or macOS, the install command offers to use Podman instead of installing Docker.
+You can also choose the container engine explicitly during installation:
+
+```bash
+npx --yes run-spaceapp@latest install --engine podman
+```
+
+- **Saved in configuration**: The engine choice (`docker` or `podman`) is stored in `config.json`
+  and automatically drives every subsequent lifecycle command (`up`, `down`, `status`, `logs`,
+  `update`, `rollback`, `backup`, `restore`, `doctor`, `uninstall`).
+- **Data preservation**: Switching engines in place on an existing installation is refused to
+  prevent orphaned volumes. To switch an existing deployment between engines, create a backup
+  with `spaceapp backup`, run `spaceapp uninstall`, install with the new `--engine`, and restore
+  with `spaceapp restore`.
+- **Rootless security & SELinux**: On Linux with rootless Podman, workspace bind mounts
+  automatically configure user namespace UID/GID mapping (`keep-id`) so non-root container processes
+  can access workspace files. On systems with SELinux in enforcing mode, workspace mounts are
+  automatically relabeled (`:z`) for multi-container access.
+- **Access mode restrictions**: `--access host-root` is exclusive to Docker on Linux. Podman
+  installations must use isolated access (`--access isolated`).
+- **macOS Podman Machine**: On macOS, Podman runs in a `podman machine` VM. The launcher checks
+  that the machine is assigned enough CPUs, memory, and disk for the selected profile and provides
+  exact `podman machine set` resize commands if needed.
+- **Diagnostics**: Both `doctor` and `support-bundle` report the active container engine, version,
+  rootless/rootful execution mode, cgroup version (`v2`), and resource limit delegation. Keep `@latest` in the command so npm resolves the current release instead
 of matching an existing local launcher. If Docker is missing, the universal
 install command automatically installs it from official Docker sources on
 Windows, macOS, Ubuntu, Debian, Fedora, RHEL, and CentOS, or with native

@@ -128,6 +128,7 @@ const CONFIG_KEYS = new Set([
   "telemetry",
   "profile",
   "accessMode",
+  "engine",
   "workspaces",
   "companionsEnabled",
   "optionalModules",
@@ -195,6 +196,39 @@ export function resolveInstallAccessMode(requestedMode, existingMode = "isolated
     return requestedMode;
   }
   throw new Error("Install access mode must be isolated or host-root.");
+}
+
+// The container engine every lifecycle command drives. A config written before engines existed has no field and keeps
+// using Docker; rootless Podman is chosen with --engine podman, or when it is the only engine on Linux/macOS.
+export const CONTAINER_ENGINES = Object.freeze(["docker", "podman"]);
+
+export function configEngine(config) {
+  return config?.engine === "podman" ? "podman" : "docker";
+}
+
+/**
+ * The engine an install uses. An existing installation keeps its engine: its volumes live in that engine's storage,
+ * so switching in place would silently start from empty data. Moving engines goes through backup and restore.
+ */
+export function resolveInstallEngine(requestedEngine, { existingEngine, accessMode } = {}) {
+  if (requestedEngine !== undefined && !CONTAINER_ENGINES.includes(requestedEngine)) {
+    throw new Error("Install engine must be docker or podman.");
+  }
+  const engine = requestedEngine ?? existingEngine ?? "docker";
+  if (existingEngine !== undefined && existingEngine !== engine) {
+    throw new Error(
+      `This installation runs on ${existingEngine}; switching it to ${engine} in place would leave its data behind. ` +
+      `Migrate instead: "${UNIVERSAL_COMMAND} backup", copy the backups folder aside, "${UNIVERSAL_COMMAND} uninstall", ` +
+      `"${UNIVERSAL_COMMAND} install --engine ${engine}", put the backup back and run "${UNIVERSAL_COMMAND} restore".`
+    );
+  }
+  if (engine === "podman" && accessMode === "host-root") {
+    throw new Error(
+      "Host-root access is not supported on Podman: rootless Podman cannot give agents the host's root file system. " +
+      "Use --access isolated with workspaces, or install with --engine docker."
+    );
+  }
+  return engine;
 }
 
 export function versionTuple(version) {
@@ -311,13 +345,17 @@ export function createDefaultConfig({
   version,
   profile = "light",
   accessMode = "isolated",
-  companionsEnabled = false
+  companionsEnabled = false,
+  engine
 }) {
   assertVersion(version);
   if (!INSTALL_PROFILES.includes(profile)) {
     throw new Error("Default config requires a resolved installation profile.");
   }
   const resolvedAccessMode = resolveInstallAccessMode(accessMode);
+  const resolvedEngine = engine !== undefined
+    ? resolveInstallEngine(engine, { accessMode: resolvedAccessMode })
+    : undefined;
   return {
     schemaVersion: CONFIG_SCHEMA_VERSION,
     version,
@@ -327,6 +365,7 @@ export function createDefaultConfig({
     telemetry: false,
     profile,
     accessMode: resolvedAccessMode,
+    ...(resolvedEngine !== undefined ? { engine: resolvedEngine } : {}),
     companionsEnabled,
     optionalModules: "none",
     workspaces: []
@@ -366,6 +405,12 @@ export function validateConfig(config) {
   }
   if (config.accessMode !== "isolated" && config.accessMode !== "host-root") {
     throw new Error("accessMode must be isolated or host-root.");
+  }
+  if (config.engine !== undefined && !CONTAINER_ENGINES.includes(config.engine)) {
+    throw new Error("engine must be docker or podman.");
+  }
+  if (config.engine === "podman" && config.accessMode === "host-root") {
+    throw new Error("Host-root access is not supported on Podman.");
   }
   if (typeof config.companionsEnabled !== "boolean") {
     throw new Error("companionsEnabled must be boolean.");
@@ -670,39 +715,54 @@ export async function userNamespacesUsable(platform = process.platform, read = (
   return await value("/proc/sys/user/max_user_namespaces") !== "0";
 }
 
+/** SELinux enforcing on a Linux host: Podman workspace binds then need a relabel, or the agents cannot read them. */
+export async function selinuxEnforcing(platform = process.platform, read = (path) => readFile(path, "utf8")) {
+  if (platform !== "linux") return false;
+  return (await read("/sys/fs/selinux/enforce").catch(() => ""))?.trim() === "1";
+}
+
 // Docker's default seccomp profile plus user namespaces, and no AppArmor profile (docker-default denies the namespace
 // mounts). Only where the sandbox can run: elsewhere it would widen the container for nothing.
 const CLI_SANDBOX_OPTIONS = ["    security_opt:", "      - seccomp=./seccomp-cli.json", "      - apparmor=unconfined"];
 
-export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
-  validateConfig(config);
-  const mounts = config.workspaces.flatMap((workspace) => [
+// Rootless Podman maps the host user to root inside the container, so the agents (uid 10001) could not write the
+// owner's workspaces. keep-id maps the host user to 10001 instead (Podman 4.3+).
+const PODMAN_KEEP_ID = '    userns_mode: "keep-id:uid=10001,gid=10001"';
+
+function workspaceBind(workspace, { selinux = false } = {}) {
+  return [
     "      - type: bind",
     `        source: ${JSON.stringify(workspace.hostPath)}`,
     `        target: ${JSON.stringify(workspace.containerPath)}`,
-    `        read_only: ${workspace.readOnly}`
-  ]);
+    `        read_only: ${workspace.readOnly}`,
+    // Shared ("z", not "Z") label: the core and the CLI container both mount the same workspace.
+    ...(selinux ? ["        bind:", "          selinux: z"] : [])
+  ];
+}
+
+export function renderWorkspaceCompose(config, { cliSandbox = false, selinuxRelabel = false } = {}) {
+  validateConfig(config);
+  const podman = configEngine(config) === "podman";
+  const bindOptions = { selinux: podman && selinuxRelabel };
+  const mounts = config.workspaces.flatMap((workspace) => workspaceBind(workspace, bindOptions));
+  const keepId = podman && mounts.length > 0 ? [PODMAN_KEEP_ID] : [];
   const service = mounts.length > 0
     ? ["    volumes:", ...mounts]
     : ["    volumes: []"];
   if (config.users === undefined) {
-    return ["services:", "  spaceapp-core:", ...service, "  spaceapp-cli:", ...service, ...(cliSandbox ? CLI_SANDBOX_OPTIONS : []), ""].join("\n");
+    return ["services:", "  spaceapp-core:", ...keepId, ...service, "  spaceapp-cli:", ...keepId, ...service, ...(cliSandbox ? CLI_SANDBOX_OPTIONS : []), ""].join("\n");
   }
   // "user enable": accounts are on, and the core starts a USER's CLIs only in that user's own container.
   const users = config.users;
   const settings = profileRuntimeSettings(config.profile);
-  const bind = (workspace) => [
-    "      - type: bind",
-    `        source: ${JSON.stringify(workspace.hostPath)}`,
-    `        target: ${JSON.stringify(workspace.containerPath)}`,
-    `        read_only: ${workspace.readOnly}`
-  ];
+  const bind = (workspace) => workspaceBind(workspace, bindOptions);
   const userServices = users.flatMap((user) => {
     const slug = userSlug(user.id);
     return [
       `  spaceapp-cli-${slug}:`,
       // The owner's pinned CLI image (runtime.env sets the digest; 1.1.7 review: a moved tag cannot change a user's).
       "    image: ghcr.io/oll4com/spaceapp-cli:${SPACEAPP_IMAGE_TAG}${SPACEAPP_CLI_IMAGE_DIGEST:-}",
+      ...(podman && user.workspaces.length > 0 ? [PODMAN_KEEP_ID] : []),
       "    restart: unless-stopped",
       "    init: true",
       "    security_opt:",
@@ -729,6 +789,7 @@ export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
   return [
     "services:",
     "  spaceapp-core:",
+    ...keepId,
     "    environment:",
     '      SPACE_MULTI_USER_ENABLED: "true"',
     "      SPACE_CLI_HOST_SOCKETS_FILE: /etc/spaceapp/cli-hosts.json",
@@ -737,6 +798,7 @@ export function renderWorkspaceCompose(config, { cliSandbox = false } = {}) {
     "      - ./cli-hosts.json:/etc/spaceapp/cli-hosts.json:ro",
     ...users.map((user) => `      - spaceapp-cli-socket-${userSlug(user.id)}:/run/spaceapp-cli-users/${userSlug(user.id)}`),
     "  spaceapp-cli:",
+    ...keepId,
     ...service,
     ...(cliSandbox ? CLI_SANDBOX_OPTIONS : []),
     ...userServices,
@@ -909,7 +971,10 @@ export function composeCommand(action, root, options = {}) {
   if (!selected) {
     throw new Error(`Unsupported Compose action "${action}".`);
   }
-  return { command: "docker", args: [...base, ...selected] };
+  // Hard-coded literals: the launcher only spawns allowlisted executables. "podman compose" runs the same files.
+  return options.engine === "podman"
+    ? { command: "podman", args: [...base, ...selected] }
+    : { command: "docker", args: [...base, ...selected] };
 }
 
 export function composeProjectName(root) {
@@ -973,7 +1038,10 @@ export async function writeRuntimeFiles(root, config, imageLock = PACKAGE_IMAGE_
     }
   }
   await atomicWrite(join(root, "runtime.env"), renderRuntimeEnv(config, imageLock, recorded));
-  await atomicWrite(join(root, "compose.workspaces.yml"), renderWorkspaceCompose(config, { cliSandbox: await userNamespacesUsable() }));
+  await atomicWrite(join(root, "compose.workspaces.yml"), renderWorkspaceCompose(config, {
+    cliSandbox: await userNamespacesUsable(),
+    selinuxRelabel: configEngine(config) === "podman" && await selinuxEnforcing()
+  }));
   // The core reads it as uid 10001 through a read-only bind mount.
   await atomicWrite(join(root, "cli-hosts.json"), renderCliHosts(config), 0o644);
   for (const user of config.users ?? []) await mkdir(providerSecretsRoot(root, user.id), { recursive: true, mode: 0o700 });
@@ -984,7 +1052,8 @@ export async function prepareInstallation(root, {
   version,
   profile,
   accessMode,
-  companionsEnabled
+  companionsEnabled,
+  engine
 }) {
   validateHome(root);
   await mkdir(root, { recursive: true, mode: 0o700 });
@@ -1007,7 +1076,8 @@ export async function prepareInstallation(root, {
       version,
       profile: resolvedProfile ?? "light",
       accessMode: resolveInstallAccessMode(accessMode),
-      companionsEnabled
+      companionsEnabled,
+      engine: engine ?? "docker"
     });
   }
   if (config.version !== version) {
@@ -1026,6 +1096,10 @@ export async function prepareInstallation(root, {
   }
   if (companionsEnabled !== undefined && config.companionsEnabled !== companionsEnabled) {
     config = { ...config, companionsEnabled };
+  }
+  const resolvedEngine = resolveInstallEngine(engine, { existingEngine: configEngine(config), accessMode: config.accessMode });
+  if (config.engine !== resolvedEngine) {
+    config = { ...config, engine: resolvedEngine };
   }
   validateConfig(config);
 

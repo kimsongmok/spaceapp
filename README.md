@@ -30,7 +30,7 @@
   Run <b>OpenCode</b>, <b>OpenAI Codex</b>, <b>Claude Code</b>, <b>Google Gemini</b>, <b>Qwen</b>, <b>Kimi</b>, <b>Grok</b>, and <b>DeepSeek</b> concurrently in persistent rooms on your own machine. Rooms organize sessions; they are not a security boundary between mutually untrusted users.
 </p>
 
-Install it on Linux, macOS or Windows 11 with one command. Docker is installed for you if it is missing:
+Install it on Linux, macOS or Windows 11 with one command. Docker is installed for you if it is missing, or choose rootless Podman on Linux and macOS (`--engine podman`):
 
 ```bash
 npx --yes run-spaceapp@latest install

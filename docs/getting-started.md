@@ -29,8 +29,9 @@ Install Node.js 20.11 or newer, then run as a normal non-root user:
 npx --yes run-spaceapp@latest install
 ```
 
-Linux runs the containers directly through the host Docker Engine; SpaceApp
-does not create a second guest VM. The launcher runs as the current non-root
+Linux runs the containers directly through the host container engine (Docker Engine or rootless Podman);
+SpaceApp does not create a second guest VM. You can choose `--engine podman` for daemonless, rootless container execution.
+When using rootless Podman, workspace mounts automatically configure `keep-id` user mapping and SELinux relabeling. The launcher runs as the current non-root
 user so the installation remains in that user's config directory. If Docker is
 missing on Ubuntu, Debian, Fedora, RHEL, or CentOS, the launcher adds Docker's
 official repository. On Arch-family systems, including CachyOS, it installs
@@ -52,6 +53,12 @@ Desktop's terms, downloads the official architecture-specific DMG, verifies
 its code signature, installs it, starts it, and waits until it is ready. Docker
 Desktop uses its managed lightweight Linux environment. Apple Silicon uses the
 native `linux/arm64` images and Intel Macs use `linux/amd64`.
+
+Alternatively, rootless Podman is supported via macOS `podman machine`:
+```bash
+npx --yes run-spaceapp@latest install --engine podman
+```
+The installer checks that your `podman machine` has sufficient CPU and memory for the chosen profile.
 
 ## Windows 11 — Command Prompt
 
