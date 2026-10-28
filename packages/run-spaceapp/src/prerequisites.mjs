@@ -140,7 +140,7 @@ export async function ensureDockerAvailable({
   if (await dockerIsReady(execute)) {
     return { code: 0, reexecuted: false };
   }
-  if ((platform === "linux" || platform === "darwin") && await engineIsReady(execute, "podman")) {
+  if (Boolean(installArgs?.allowPodmanFallback) && (platform === "linux" || platform === "darwin") && await engineIsReady(execute, "podman")) {
     const autoConfirm = Boolean(installArgs?.autoConfirm);
     const selectPodman = autoConfirm || await confirmQuestion({
       stdin,

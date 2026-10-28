@@ -185,3 +185,42 @@ test("install with --engine podman persists engine in config and calls podman pr
   assert.equal(savedConfig.engine, "podman");
   assert.match(stdout.value(), /Engine: not configured -> podman/);
 });
+
+test("lifecycle compose commands respect engine: podman across actions", () => {
+  const root = join(tmpdir(), "spaceapp-dummy");
+  for (const action of ["up", "down", "status", "logs", "repair", "purge"]) {
+    const cmd = composeCommand(action, root, { profile: "standard", engine: "podman" });
+    assert.equal(cmd.command, "podman", `Action ${action} should dispatch podman`);
+    assert.equal(cmd.args[0], "compose");
+  }
+});
+
+test("ensureDockerAvailable does not fallback to podman when allowPodmanFallback is false", async () => {
+  const { ensureDockerAvailable } = await import("../src/prerequisites.mjs");
+  const stdout = capture();
+  const stderr = capture();
+  let podmanProbed = false;
+  try {
+    const res = await ensureDockerAvailable({
+      platform: "linux",
+      arch: "x64",
+      stdin: ttyStdin("y"),
+      stdout: stdout.stream,
+      stderr: stderr.stream,
+      execute: async (spec) => {
+        if (spec.command === "docker") return 1;
+        if (spec.command === "podman") {
+          podmanProbed = true;
+          return 0;
+        }
+        return 0;
+      },
+      installArgs: { allowPodmanFallback: false, autoConfirm: true }
+    });
+    assert.notEqual(res.engine, "podman");
+  } catch (err) {
+    // Proceeding to linux docker installer confirms podman fallback was skipped
+    assert.match(err.message, /os-release|ENOENT/);
+  }
+  assert.equal(podmanProbed, false);
+});

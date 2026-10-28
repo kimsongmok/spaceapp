@@ -55,7 +55,5 @@ jobs:
 
       - run: npm test -w run-spaceapp
       - run: npm run check -w run-spaceapp
-      - name: Verify Podman engine tests
-        run: node --test packages/run-spaceapp/tests/podman.test.mjs
       - run: npm run pack:dry-run -w run-spaceapp
       - run: node packages/run-spaceapp/bin/spaceapp.mjs --version
