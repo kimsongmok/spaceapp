@@ -200,27 +200,27 @@ test("ensureDockerAvailable does not fallback to podman when allowPodmanFallback
   const stdout = capture();
   const stderr = capture();
   let podmanProbed = false;
-  try {
-    const res = await ensureDockerAvailable({
-      platform: "linux",
-      arch: "x64",
-      stdin: ttyStdin("y"),
-      stdout: stdout.stream,
-      stderr: stderr.stream,
-      execute: async (spec) => {
-        if (spec.command === "docker") return 1;
-        if (spec.command === "podman") {
-          podmanProbed = true;
-          return 0;
-        }
+  const res = await ensureDockerAvailable({
+    platform: "linux",
+    arch: "x64",
+    stdin: ttyStdin("y"),
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    execute: async (spec) => {
+      if (spec.command === "docker") return 1;
+      if (spec.command === "podman") {
+        podmanProbed = true;
         return 0;
-      },
-      installArgs: { allowPodmanFallback: false, autoConfirm: true }
-    });
-    assert.notEqual(res.engine, "podman");
-  } catch (err) {
-    // Proceeding to linux docker installer confirms podman fallback was skipped
-    assert.match(err.message, /os-release|ENOENT/);
-  }
+      }
+      return 0;
+    },
+    launch: async () => 0,
+    pathExists: async () => true,
+    sleep: async () => {},
+    osRelease: { ID: "arch" },
+    download: async () => { throw new Error("Arch installation must not download bootstrap files."); },
+    installArgs: { allowPodmanFallback: false, autoConfirm: true, requestedProfile: "auto" }
+  });
+  assert.notEqual(res.engine, "podman");
   assert.equal(podmanProbed, false);
 });
