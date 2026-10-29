@@ -18,7 +18,7 @@ npm install -g run-spaceapp
 The smallest profile requires Node.js 20.11 or newer, 4 CPUs, 8 GB-class RAM
 (7 GiB usable), and 6.5 GiB free for a fresh installation.
 
-### Container Engines (Docker and rootless Podman)
+## Container Engines (Docker and rootless Podman)
 
 SpaceApp supports both **Docker** (default) and **rootless Podman** on Linux and macOS.
 By default, the launcher uses Docker. If Docker is not available and Podman is ready on

@@ -1479,7 +1479,7 @@ test("macOS authorization failure stops the install before SpaceApp image pulls"
     }),
     execute: async (spec, io) => {
       calls.push({ spec, io });
-      if (spec.command === "docker") return 127;
+      if (spec.command === "docker" || spec.command === "podman") return 127;
       if (spec.command === "sudo") return 1;
       return 0;
     }

@@ -185,6 +185,8 @@ test("install with --engine podman persists engine in config and calls podman pr
   const savedConfig = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
   assert.equal(savedConfig.engine, "podman");
   assert.match(stdout.value(), /Engine: not configured -> podman/);
+  const dockerCalls = calls.filter((spec) => spec.command === "docker");
+  assert.equal(dockerCalls.length, 0, "No commands should execute docker when engine is podman");
 });
 
 test("lifecycle compose commands respect engine: podman across actions", () => {
@@ -264,6 +266,11 @@ test("legacy installation without engine field in config does not allow podman f
     profile: "standard",
     accessMode: "isolated"
   });
+  const rawConfig = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
+  delete rawConfig.engine;
+  await writeFile(join(root, "config.json"), `${JSON.stringify(rawConfig, null, 2)}\n`, "utf8");
+  const reloaded = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
+  assert.equal(reloaded.engine, undefined);
   const stdout = capture();
   const stderr = capture();
   let dockerChecked = false;
@@ -296,4 +303,38 @@ test("legacy installation without engine field in config does not allow podman f
   assert.equal(podmanProbed, false);
   const updatedConfig = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
   assert.notEqual(updatedConfig.engine, "podman");
+});
+test("lifecycle commands on persisted podman config dispatch to podman and never docker", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-podman-lifecycle-"));
+  await initializeInstallation(root, {
+    version: "1.1.9",
+    profile: "standard",
+    accessMode: "isolated",
+    engine: "podman",
+    bindHost: "127.0.0.1",
+    port: 8080
+  });
+
+  for (const cmd of [["up"], ["down"], ["status"], ["logs"]]) {
+    const stdout = capture();
+    const stderr = capture();
+    const executed = [];
+    const exitCode = await run(cmd, {
+      env: { SPACEAPP_HOME: root },
+      platform: "linux",
+      stdout: stdout.stream,
+      stderr: stderr.stream,
+      stdin: ttyStdin("y"),
+      execute: async (spec) => {
+        executed.push(spec);
+        return 0;
+      },
+      request: async () => ({ ok: true, json: async () => ({ ok: true, setupRequired: false }) })
+    });
+    assert.equal(exitCode, 0, `Command ${cmd[0]} should succeed`);
+    const dockerCalls = executed.filter((spec) => spec.command === "docker");
+    assert.equal(dockerCalls.length, 0, `Command ${cmd[0]} must not call docker`);
+    const podmanCalls = executed.filter((spec) => spec.command === "podman");
+    assert.ok(podmanCalls.length > 0, `Command ${cmd[0]} must call podman`);
+  }
 });

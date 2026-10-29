@@ -370,7 +370,7 @@ export async function run(argv, {
   if (globalFlags.localImages) {
     const originalExecute = execute;
     execute = async (spec, io) => {
-      if (spec.command === "docker" && spec.args?.includes("compose")) {
+      if ((spec.command === "docker" || spec.command === "podman") && spec.args?.includes("compose")) {
         if (spec.args.at(-1) === "pull") {
           stdout.write("Local images only: skipping registry downloads; missing images will fail startup.\n");
           return 0;
@@ -827,11 +827,11 @@ async function installCommand(args, {
         requestedAccessMode,
         noOpen,
         autoConfirm: true,
-        allowPodmanFallback: !requestedEngine && !existingConfig
+        allowPodmanFallback: !requestedEngine && !existingConfig && interactiveAvailable(stdin) && accessMode !== "host-root"
       }
     });
     if (prerequisiteResult.engine === "podman") {
-      engine = "podman";
+      engine = resolveInstallEngine("podman", { accessMode });
       result.config = { ...result.config, engine: "podman" };
       await writeRuntimeFiles(root, result.config);
     }
@@ -887,6 +887,7 @@ async function installCommand(args, {
         root,
         stateRoot: stagedStateRoot,
         profile,
+        engine: result.config?.engine,
         platform,
         stdin,
         stdout,
@@ -900,6 +901,7 @@ async function installCommand(args, {
         root,
         stagedStateRoot,
         existingConfig,
+        attemptedConfig: result.config,
         attemptedProfile: profile,
         companionsEnabled,
         platform,
@@ -1696,6 +1698,7 @@ async function reportInstallDiagnostics({
   root,
   stateRoot,
   profile,
+  engine = "docker",
   platform,
   stdin,
   stdout,
@@ -1710,6 +1713,7 @@ async function reportInstallDiagnostics({
         composeCommand(action, root, {
           profile,
           stateRoot,
+          engine,
           lines: 200
         }),
         { stdin, stdout, stderr },
@@ -1717,7 +1721,7 @@ async function reportInstallDiagnostics({
       );
       if (code !== 0) {
         stderr.write(
-          `SpaceApp could not collect ${action} diagnostics (Docker exit ${code}).\n`
+          `SpaceApp could not collect ${action} diagnostics (${engine === "podman" ? "Podman" : "Docker"} exit ${code}).\n`
         );
       }
     } catch (error) {
@@ -1732,6 +1736,7 @@ async function restoreRuntimeAfterFailedInstall({
   root,
   stagedStateRoot,
   existingConfig,
+  attemptedConfig,
   attemptedProfile,
   companionsEnabled,
   platform,
@@ -1764,11 +1769,13 @@ async function restoreRuntimeAfterFailedInstall({
       );
     }
 
+    const fallbackEngine = attemptedConfig ? configEngine(attemptedConfig) : "docker";
     const stopCode = await runtimeExecute(
       composeCommand("down", root, composeOpts(existingConfig, {
         profile: existingConfig?.profile ?? attemptedProfile,
         stateRoot: existingConfig ? root : stagedStateRoot,
-        companionsEnabled: existingConfig?.companionsEnabled ?? companionsEnabled
+        companionsEnabled: existingConfig?.companionsEnabled ?? companionsEnabled,
+        engine: existingConfig ? configEngine(existingConfig) : fallbackEngine
       }))
     );
     if (stopCode !== 0) {
@@ -2365,7 +2372,10 @@ async function factoryResetCommand({
     await rm(join(root, "compose.yml"), { force: true });
   } catch {}
 
-  const result = await initializeInstallation(root, { version: runtimeVersion });
+  const result = await initializeInstallation(root, {
+    version: runtimeVersion,
+    engine: configEngine(config)
+  });
   stdout.write(`SpaceApp factory reset complete. Clean installation initialized at ${root}\n`);
   if (result.setupToken) {
     stdout.write(`One-time setup token: ${result.setupToken}\n`);

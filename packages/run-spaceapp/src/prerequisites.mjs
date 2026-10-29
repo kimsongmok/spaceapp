@@ -141,8 +141,7 @@ export async function ensureDockerAvailable({
     return { code: 0, reexecuted: false };
   }
   if (Boolean(installArgs?.allowPodmanFallback) && (platform === "linux" || platform === "darwin") && await engineIsReady(execute, "podman")) {
-    const autoConfirm = Boolean(installArgs?.autoConfirm);
-    const selectPodman = autoConfirm || await confirmQuestion({
+    const selectPodman = Boolean(installArgs?.autoConfirmFallback) || await confirmQuestion({
       stdin,
       stdout,
       question: "Docker is not available, but rootless Podman is ready. Use rootless Podman as container engine instead of installing Docker?"
