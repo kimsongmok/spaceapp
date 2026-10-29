@@ -827,7 +827,7 @@ async function installCommand(args, {
         requestedAccessMode,
         noOpen,
         autoConfirm: true,
-        allowPodmanFallback: !requestedEngine && !existingConfig?.engine
+        allowPodmanFallback: !requestedEngine && !existingConfig
       }
     });
     if (prerequisiteResult.engine === "podman") {
@@ -1551,7 +1551,7 @@ async function collectFiles(directory, logicalDirectory) {
 // the database, files, memory and Temporal histories are one moment and CLI sessions survive (external review
 // 2026-10-16). Compose skips services that are not running.
 async function backupWithWritersPaused(execute, root, config, io) {
-  const options = { profile: config.profile, companionsEnabled: config.companionsEnabled };
+  const options = composeOpts(config);
   io.stdout.write("Pausing SpaceApp writers for the backup; the app and CLI sessions resume afterwards...\n");
   const pauseCode = await execute(composeCommand("pauseWriters", root, options), io);
   if (pauseCode !== 0) return pauseCode;

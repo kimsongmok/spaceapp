@@ -9,7 +9,8 @@ import {
   createDefaultConfig,
   renderWorkspaceCompose,
   resolveInstallEngine,
-  validateConfig
+  validateConfig,
+  initializeInstallation
 } from "../src/index.mjs";
 import {
   engineCommand,
@@ -223,4 +224,76 @@ test("ensureDockerAvailable does not fallback to podman when allowPodmanFallback
   });
   assert.notEqual(res.engine, "podman");
   assert.equal(podmanProbed, false);
+});
+
+test("CLI backup dispatches pauseWriters, backup, and unpauseWriters to podman when configured", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-podman-backup-"));
+  await initializeInstallation(root, {
+    version: "1.1.9",
+    profile: "standard",
+    accessMode: "isolated",
+    engine: "podman",
+    bindHost: "127.0.0.1",
+    port: 8080
+  });
+  const stdout = capture();
+  const stderr = capture();
+  const executed = [];
+  const exitCode = await run(["backup"], {
+    env: { SPACEAPP_HOME: root },
+    platform: "linux",
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    stdin: ttyStdin(),
+    execute: async (spec) => {
+      executed.push(spec);
+      return 0;
+    }
+  });
+  assert.equal(exitCode, 0);
+  const commands = executed.filter((spec) => spec.command === "podman");
+  assert.ok(commands.some((spec) => spec.args?.includes("pause")));
+  assert.ok(commands.some((spec) => spec.args?.includes("scripts/portable-backup.mjs")));
+  assert.ok(commands.some((spec) => spec.args?.includes("unpause")));
+});
+
+test("legacy installation without engine field in config does not allow podman fallback", async () => {
+  const root = await mkdtemp(join(tmpdir(), "spaceapp-legacy-install-"));
+  await initializeInstallation(root, {
+    version: "0.1.10",
+    profile: "standard",
+    accessMode: "isolated"
+  });
+  const stdout = capture();
+  const stderr = capture();
+  let dockerChecked = false;
+  let podmanProbed = false;
+
+  const exitCode = await run(["install", "--profile", "light", "--no-open"], {
+    env: { SPACEAPP_HOME: root },
+    platform: "linux",
+    stdout: stdout.stream,
+    stderr: stderr.stream,
+    stdin: ttyStdin("y"),
+    inspectResources: async () => ({ cpuCount: 8, totalMemoryBytes: 16 * 1024 ** 3, freeDiskBytes: 40 * 1024 ** 3 }),
+    ensureDocker: async ({ installArgs }) => {
+      dockerChecked = true;
+      assert.equal(installArgs?.allowPodmanFallback, false);
+      return { code: 0, reexecuted: false };
+    },
+    execute: async (spec, io) => {
+      if (spec.args?.includes("pg_dump")) { io.stdout.write("-- PostgreSQL database dump\nSELECT 1;\n"); return 0; }
+      if (spec.command === "podman") podmanProbed = true;
+      return 0;
+    },
+    request: async (url) => url.endsWith("/readyz")
+      ? { ok: true, json: async () => ({ ok: true }) }
+      : { ok: true, json: async () => ({ setupRequired: false, expiresAt: null }) }
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(dockerChecked, true);
+  assert.equal(podmanProbed, false);
+  const updatedConfig = JSON.parse(await readFile(join(root, "config.json"), "utf8"));
+  assert.notEqual(updatedConfig.engine, "podman");
 });
